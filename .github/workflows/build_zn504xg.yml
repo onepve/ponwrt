@@ -1,0 +1,92 @@
+name: Build Custom ZN504XG-D
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release Tag'
+        required: true
+        default: 'v1.0-custom'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ZN504XG-D PonWrt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Free build space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk \
+            gettext git g++-multilib gcc-multilib gperf help2man intltool \
+            libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev \
+            libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev \
+            libtool libyaml-dev lld llvm ninja-build p7zip-full patch pkgconf \
+            python3 python3-docutils python3-pip python3-ply python3-pyelftools \
+            qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo \
+            uglifyjs unzip wget xmlto xxd zlib1g-dev zstd
+
+      - name: Install feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure Target and Custom Packages
+        run: |
+          # 二元前缀表达式合并三个 config：+ A (+ B C)
+          ./scripts/kconfig.pl + \
+            configs/an7581.config \
+            + configs/release.config \
+            configs/custom_zn504xg.config > .config
+          
+          # 生成 defconfig
+          make defconfig
+
+      - name: Download sources
+        run: make download -j"$(nproc)"
+
+      - name: Compile Firmware
+        run: make -j"$(nproc)" || make -j1 V=s
+
+      - name: Collect Output Artifacts
+        run: |
+          mkdir -p /tmp/firmware_out
+          find bin/targets/airoha/ -type f \( -name "*zn504xg-d*" -o -name "*sysupgrade*" -o -name "*initramfs*" \) -exec cp {} /tmp/firmware_out/ \;
+          ls -la /tmp/firmware_out/
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZN504XG-D-PonWrt-${{ inputs.tag }}
+          path: /tmp/firmware_out/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd /tmp/firmware_out
+          sha256sum * > sha256sums.txt
+          gh release create "${{ inputs.tag }}" \
+            * \
+            --repo "${{ github.repository }}" \
+            --title "PonWrt ZN504XG-D ${{ inputs.tag }}" \
+            --notes "定制纯净版 PonWrt 固件：集成硬件加速 PPE、mwan3 多拨、msd_lite 电信 IPTV、Argon 主题与 wrtbwmon 流量监控。适配兆能 ZN504XG-D (达发 AN7581)。"
